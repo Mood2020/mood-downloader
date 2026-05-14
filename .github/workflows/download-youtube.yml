@@ -1,75 +1,85 @@
-name: Download YouTube to videos
+name: 🎬 OurTube Pro Downloader
 
 on:
   workflow_dispatch:
     inputs:
-      youtube_url:
-        description: YouTube URL to download
+      urls:
+        description: "لینک یوتیوب (چندتا با فاصله)"
         required: true
-      max_part_size_mb:
-        description: Split ZIP part size in MB (e.g. 1900). Set 0 to disable split.
+        type: string
+      quality:
+        description: "کیفیت (1080 / 720 / 480 / 360 / mp3)"
         required: false
-        default: "1900"
-
-permissions:
-  contents: write
+        default: "720"
 
 jobs:
   download:
-    name: Download and package video
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg zip
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade yt-dlp
+          sudo apt update
+          sudo apt install -y ffmpeg zip p7zip-full
+          pip install yt-dlp
 
-      - name: Verify dependencies
+      - name: Prepare
+        run: mkdir -p output
+
+      - name: Download videos
         run: |
-          python --version
-          pip --version
-          yt-dlp --version
-          ffmpeg -version | head -n 1
-          zip -v | head -n 2
+          QUALITY="${{ github.event.inputs.quality }}"
+          URLS="${{ github.event.inputs.urls }}"
 
-      - name: Download video
+          case $QUALITY in
+            1080)
+              FORMAT="bestvideo[height<=1080]+bestaudio/best"
+              ;;
+            720)
+              FORMAT="bestvideo[height<=720]+bestaudio/best"
+              ;;
+            480)
+              FORMAT="bestvideo[height<=480]+bestaudio/best"
+              ;;
+            360)
+              FORMAT="bestvideo[height<=360]+bestaudio/best"
+              ;;
+            mp3)
+              FORMAT="bestaudio"
+              ;;
+            *)
+              FORMAT="best"
+              ;;
+          esac
+
+          for url in $URLS; do
+            if [ "$QUALITY" = "mp3" ]; then
+              yt-dlp "$url" \
+                -x --audio-format mp3 \
+                -o "output/%(title)s.%(ext)s"
+            else
+              yt-dlp "$url" \
+                --format "$FORMAT" \
+                --merge-output-format mp4 \
+                -o "output/%(title)s.%(ext)s"
+            fi
+          done
+
+      - name: Split large files
+        run: |
+          cd output
+          for file in *; do
+            if [ -f "$file" ]; then
+              zip -s 1900m "${file}.zip" "$file"
+            fi
+          done
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "download-${{ github.run_number }}"
+          files: output/*
         env:
-          YOUTUBE_URL: ${{ github.event.inputs.youtube_url }}
-        run: |
-          mkdir -p videos
-          yt-dlp \
-            --no-playlist \
-            --merge-output-format mp4 \
-            --output "videos/%(title).120B [%(id)s].%(ext)s" \
-            "$YOUTUBE_URL"
-
-      - name: Compress downloaded content
-        env:
-          MAX_PART_SIZE_MB: ${{ github.event.inputs.max_part_size_mb }}
-        run: |
-          bash scripts/package_videos.sh "$MAX_PART_SIZE_MB"
-
-      - name: Commit videos and archives
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add videos
-          if git diff --cached --quiet; then
-            echo "No new changes to commit."
-            exit 0
-          fi
-          git commit -m "Add downloaded video from workflow run"
-          git push
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
