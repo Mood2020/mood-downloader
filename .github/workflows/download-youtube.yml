@@ -1,0 +1,66 @@
+name: Download YouTube to videos/
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'YouTube URL to download'
+        required: true
+        type: string
+      max_part_size_mb:
+        description: 'Split ZIP part size in MB (e.g. 1900). Set 0 to disable split.'
+        required: false
+        default: '1900'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yt-dlp
+
+      - name: Download video
+        env:
+          YOUTUBE_URL: ${{ inputs.youtube_url }}
+        run: |
+          mkdir -p videos
+          yt-dlp \
+            --no-playlist \
+            --merge-output-format mp4 \
+            --output 'videos/%(title).120B [%(id)s].%(ext)s' \
+            "$YOUTUBE_URL"
+
+      - name: Compress downloaded content
+        env:
+          MAX_PART_SIZE_MB: ${{ inputs.max_part_size_mb }}
+        run: |
+          bash scripts/package_videos.sh "$MAX_PART_SIZE_MB"
+
+      - name: Commit videos and archives
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add videos
+          if git diff --cached --quiet; then
+            echo "No new changes to commit."
+            exit 0
+          fi
+          git commit -m "Add downloaded video from workflow run"
+          git push
